@@ -1,0 +1,6 @@
+node_modules/
+.npm-cache/
+.npmrc
+*.tgz
+.DS_Store
+scripts/smoke-screenshot.png
