@@ -55,6 +55,10 @@ pwsh -File scripts\publish-interactive.ps1
 - **内置态不可删**：settings 的 `mergeLayers` 对数组是整体替换，用户写入 labels 后 resolved 不再含 base 内置项——客户端 `resolveLabels` 始终把内置三态合并回来。
 - **惰性清理**：会话归档/删除后，其 `sessions` 条目在下次写入时自动剔除；空映射 `unset` 不落盘。
 
+## 相关插件
+
+- [dsh-session-memo](https://github.com/LucienLL/dsh-session-memo)：对话侧边备忘录（GitHub 同步状态 / npm 发布状态 / 项目版本 / 备忘标签），与本站状态标签弱联动（面板头部显示并可切换）。
+
 ## License
 
 MIT
