@@ -47,7 +47,7 @@ test('bundle factory 执行并导出契约形状', () => {
 test('bundle 内联纯逻辑与 status-store 行为一致（漂移护栏）', () => {
   const u = captured.__statusUtils
   // VM 上下文创建的对象原型与宿主不同，deepStrictEqual 会误报，统一 JSON 规范化比较。
-  const json = (value) => JSON.parse(JSON.stringify(value))
+  const json = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)))
 
   // resolveLabels
   assert.deepEqual(json(u.resolveLabels({ labels: [] }).map(l => l.key)), json(store.resolveLabels({ labels: [] }).map(l => l.key)))
@@ -98,6 +98,38 @@ test('bundle 内联纯逻辑与 status-store 行为一致（漂移护栏）', ()
   assert.equal(u.generateLabelKey('todo', new Set(['todo', 'todo-2'])), store.generateLabelKey('todo', new Set(['todo', 'todo-2'])))
   assert.equal(u.nextPaletteColor([{ key: 'x', name: 'X', color: store.PALETTE[0] }]),
     store.nextPaletteColor([{ key: 'x', name: 'X', color: store.PALETTE[0] }]))
+
+  // overrides：resolveLabels 应用内置颜色覆盖，builtinDefaultColor / setOverride / clearOverride 一致
+  const overrideSamples = [
+    { labels: [], overrides: { active: { color: '#ff00ff' } } },
+    { labels: [], overrides: { active: { color: '' }, done: { color: '#00ff00' } } },
+    { labels: [{ key: 'c', name: 'C', color: '#ef4444' }], overrides: { paused: { color: '#abcdef' } } },
+    undefined, [], { labels: [] },
+  ]
+  for (const sample of overrideSamples) {
+    assert.deepEqual(json(u.resolveLabels(sample)), json(store.resolveLabels(sample)), `resolveLabels(overrides ${JSON.stringify(sample)})`)
+  }
+  for (const key of ['active', 'done', 'paused', 'nope']) {
+    assert.equal(u.builtinDefaultColor(key), store.builtinDefaultColor(key), `builtinDefaultColor(${key})`)
+  }
+  const overrideOps = [
+    [undefined, 'active', { color: '#ff00ff' }],
+    [{ active: { color: '#111111' } }, 'active', { color: '#ff00ff' }],
+    [{ active: { color: '#ff00ff' } }, 'done', { color: '#00ff00' }],
+    [{ done: { color: '#00ff00' } }, 'done', { color: '#000000' }],
+  ]
+  for (const [ov, key, patch] of overrideOps) {
+    assert.deepEqual(json(u.setOverride(ov, key, patch)), json(store.setOverride(ov, key, patch)), `setOverride(${key})`)
+  }
+  const clearOps = [
+    [{ active: { color: '#ff00ff' }, done: { color: '#00ff00' } }, 'active'],
+    [{ done: { color: '#00ff00' } }, 'done'],
+    [undefined, 'active'],
+    [{ done: { color: '#00ff00' } }, 'nope'],
+  ]
+  for (const [ov, key] of clearOps) {
+    assert.deepEqual(json(u.clearOverride(ov, key)), json(store.clearOverride(ov, key)), `clearOverride(${key}) value`)
+  }
 
   console.log('client-shape drift-guard OK')
 })
@@ -175,7 +207,7 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
     pill.props.onClick({ stopPropagation() {} })
   }
 
-  const json = (value) => JSON.parse(JSON.stringify(value))
+  const json = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)))
 
   // active -> done -> paused -> (无状态，unset)
   clickPill()
@@ -328,4 +360,98 @@ test('hover 卡状态注入接线（renderAll 把插件状态追加进 portal �
   assert.equal(container.children.length, before, '重复标题不注入 hover 行')
 
   console.log('client-shape hover-injection wiring OK')
+})
+
+test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清除）', () => {
+  const reactMock = {
+    createElement(type, props, ...children) { return { type, props: props || {}, children } },
+    useState(init) { return [init, () => {}] },
+    useReducer(reducer, init) { return [init, () => {}] },
+    useRef(init) { return { current: init } },
+    useEffect() {},
+  }
+
+  let captured = null
+  const sandbox = {
+    window: {
+      __ModuleLoader__: {
+        load({ factory }) { captured = factory((name) => (name === 'react' ? reactMock : {})) },
+      },
+    },
+    document: {
+      readyState: 'complete',
+      body: {},
+      addEventListener() {},
+      removeEventListener() {},
+      querySelectorAll() { return [] },
+      createElement() { return { setAttribute() {}, style: {} } },
+    },
+    MutationObserver: function () { return { observe() {}, disconnect() {} } },
+    requestAnimationFrame() { return 1 },
+    cancelAnimationFrame() {},
+  }
+  vm.createContext(sandbox)
+  vm.runInContext(code, sandbox)
+
+  let settingsRenderer = null
+  const scopeCalls = []
+  const scopeSnapshot = { status: 'ready', value: { labels: [], sessions: {} } }
+  const scopeMock = {
+    bind() { return scopeMock },
+    subscribe() { return () => {} },
+    getSnapshot() { return scopeSnapshot },
+    set(key, value) { scopeCalls.push([key, value]) },
+    unset(key) { scopeCalls.push([key, 'UNSET']) },
+  }
+  const ctx = {
+    settingsScope: { bind() { return scopeMock } },
+    sessions: { list: { subscribe() { return () => {} }, getSnapshot() { return { phase: 'ready', ids: [], byId: {} } } } },
+    slots: {
+      inject(name, fn) {
+        const reg = fn()
+        if (name === 'settings.section') settingsRenderer = reg.renderer
+      },
+      register(opts, renderer) { return { opts, renderer } },
+    },
+    effect() {},
+  }
+  captured.apply(ctx)
+  assert.ok(typeof settingsRenderer === 'function', 'settings.section renderer must be registered')
+
+  const renderElement = (el) => {
+    if (el === null || el === undefined || typeof el !== 'object') return el
+    if (Array.isArray(el)) return el.map(renderElement)
+    if (typeof el.type === 'function') return renderElement(el.type(el.props))
+    return { type: el.type, props: el.props, children: (el.children || []).map(renderElement) }
+  }
+  const tree = renderElement(settingsRenderer({}))
+  const walk = (node, pred, out = []) => {
+    if (node === null || node === undefined) return out
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, pred, out)
+      return out
+    }
+    if (typeof node !== 'object') return out
+    if (pred(node)) out.push(node)
+    for (const child of (Array.isArray(node.children) ? node.children : [])) walk(child, pred, out)
+    return out
+  }
+  const buttons = walk(tree, n => n.type === 'button')
+
+  // 内置行应有 8 色 swatch（第一个 #ef4444 属于「进行中」内置行）
+  const firstSwatch = buttons.find(b => b.props.title === '#ef4444')
+  assert.ok(firstSwatch, '内置行应有色板 swatch')
+  firstSwatch.props.onClick()
+  assert.deepEqual(JSON.parse(JSON.stringify(scopeCalls.pop())), ['overrides', { active: { color: '#ef4444' } }])
+
+  // 覆盖后出现「恢复默认」；点击后清空覆盖（unset）
+  scopeSnapshot.value.overrides = { active: { color: '#ef4444' } }
+  const tree2 = renderElement(settingsRenderer({}))
+  const buttons2 = walk(tree2, n => n.type === 'button')
+  const reset = buttons2.find(b => b.children === '恢复默认' || (Array.isArray(b.children) && b.children[0] === '恢复默认'))
+  assert.ok(reset, '覆盖后应出现「恢复默认」')
+  reset.props.onClick()
+  assert.deepEqual(JSON.parse(JSON.stringify(scopeCalls.pop())), ['overrides', 'UNSET'])
+
+  console.log('client-shape builtin-override wiring OK')
 })

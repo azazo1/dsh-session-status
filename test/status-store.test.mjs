@@ -9,6 +9,7 @@ import {
   BUILTIN_LABELS, PALETTE, MAX_CUSTOM_LABELS, LABEL_KEY_PATTERN, LABEL_ICONS,
   resolveLabels, findLabel, labelIconKey, resolveLabelIcon, nextSessionStatus, assignStatus, clearStatus,
   pruneSessions, validateLabelInput, generateLabelKey, nextPaletteColor,
+  builtinDefaultColor, applyBuiltinOverride, setOverride, clearOverride,
 } from '../lib/status-store.js'
 
 test('BUILTIN_LABELS：三态齐全、key 合法、颜色在色板、builtin 标记', () => {
@@ -45,6 +46,49 @@ test('resolveLabels：内置 key 优先且不被用户覆盖（同名去重）',
   assert.equal(labels[0].name, '进行中')          // 内置赢
   assert.equal(labels[3].builtin, false)
   assert.equal(labels[3].color, '#ef4444')
+})
+
+test('resolveLabels：overrides 改内置呈现颜色，不改变 key/语义', () => {
+  const labels = resolveLabels({
+    labels: [{ key: 'custom', name: '自定义', color: '#ef4444' }],
+    overrides: { active: { color: '#ff00ff' } },
+  })
+  assert.equal(labels.length, 4)
+  assert.equal(labels[0].key, 'active')
+  assert.equal(labels[0].builtin, true)
+  assert.equal(labels[0].color, '#ff00ff')         // 覆盖生效
+  assert.equal(labels[1].color, '#3b82f6')         // 未覆盖的保持默认
+  assert.equal(labels[3].color, '#ef4444')         // 自定义不受影响
+  // 空字符串/缺字段的覆盖不生效；纯 labels 数组输入无 overrides
+  const noop = resolveLabels({ labels: [], overrides: { active: { color: '' }, done: {} } })
+  assert.equal(noop[0].color, '#22c55e')
+  assert.equal(noop[1].color, '#3b82f6')
+  assert.equal(resolveLabels([])[0].color, '#22c55e')
+})
+
+test('builtinDefaultColor / applyBuiltinOverride：默认色与覆盖合并', () => {
+  assert.equal(builtinDefaultColor('active'), '#22c55e')
+  assert.equal(builtinDefaultColor('done'), '#3b82f6')
+  assert.equal(builtinDefaultColor('paused'), '#9ca3af')
+  assert.equal(builtinDefaultColor('nope'), undefined)
+  const base = { key: 'active', name: '进行中', color: '#22c55e', builtin: true }
+  assert.equal(applyBuiltinOverride(base, null), base)          // 无覆盖 → 原引用
+  assert.equal(applyBuiltinOverride(base, { color: '' }), base) // 空串不生效
+  const overridden = applyBuiltinOverride(base, { color: '#ff00ff' })
+  assert.deepEqual(overridden, { key: 'active', name: '进行中', color: '#ff00ff', builtin: true })
+  assert.equal(base.color, '#22c55e')                           // 原对象不变
+})
+
+test('setOverride / clearOverride：不可变、覆盖合并、清空返回 undefined（不写）', () => {
+  assert.deepEqual(setOverride(undefined, 'active', { color: '#ff00ff' }), { active: { color: '#ff00ff' } })
+  assert.deepEqual(setOverride({ active: { color: '#111111' } }, 'active', { color: '#ff00ff' }),
+    { active: { color: '#ff00ff' } })
+  const two = setOverride({ active: { color: '#ff00ff' } }, 'done', { color: '#00ff00' })
+  assert.deepEqual(two, { active: { color: '#ff00ff' }, done: { color: '#00ff00' } })
+  assert.deepEqual(clearOverride(two, 'active'), { done: { color: '#00ff00' } })
+  assert.equal(clearOverride({ done: { color: '#00ff00' } }, 'done'), undefined)  // 清空 → 不写
+  assert.equal(clearOverride(undefined, 'active'), undefined)
+  assert.deepEqual(clearOverride({ done: { color: '#00ff00' } }, 'active'), { done: { color: '#00ff00' } })
 })
 
 test('resolveLabels：非法条目（缺字段/空名）被跳过', () => {
