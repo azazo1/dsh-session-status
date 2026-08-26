@@ -9,7 +9,7 @@ import {
   BUILTIN_LABELS, PALETTE, MAX_CUSTOM_LABELS, LABEL_KEY_PATTERN, LABEL_ICONS,
   resolveLabels, findLabel, labelIconKey, resolveLabelIcon, nextSessionStatus, assignStatus, clearStatus,
   pruneSessions, validateLabelInput, generateLabelKey, nextPaletteColor,
-  builtinDefaultColor, applyBuiltinOverride, setOverride, clearOverride,
+  builtinDefaultColor, applyBuiltinOverride, setOverride, clearOverride, normalizeHex,
 } from '../lib/status-store.js'
 
 test('BUILTIN_LABELS：三态齐全、key 合法、颜色在色板、builtin 标记', () => {
@@ -180,9 +180,24 @@ test('validateLabelInput：名称/key/重复/颜色/上限校验', () => {
   assert.ok(validateLabelInput({ key: '1abc', name: 'x', color: '#ef4444' }, base))
   assert.ok(validateLabelInput({ key: 'active', name: 'x', color: '#ef4444' }, base))   // 内置 key
   assert.ok(validateLabelInput({ key: 'dup', name: 'x', color: '#ef4444' }, resolveLabels({ labels: [{ key: 'dup', name: 'y', color: '#f59e0b' }] })))
-  assert.ok(validateLabelInput({ key: 'todo', name: 'x', color: '#123456' }, base))     // 非色板
+  assert.equal(validateLabelInput({ key: 'todo', name: 'x', color: '#123456' }, base), null)   // 任意 hex 合法
+  assert.equal(validateLabelInput({ key: 'todo', name: 'x', color: '#AbC' }, base), null)      // #RGB 简写合法
+  assert.ok(validateLabelInput({ key: 'todo', name: 'x', color: '#12345' }, base))             // 位数不足非法
+  assert.ok(validateLabelInput({ key: 'todo', name: 'x', color: 'red' }, base))                // 非 hex 非法
+  assert.ok(validateLabelInput({ key: 'todo', name: 'x', color: '' }, base))
   const many = resolveLabels({ labels: Array.from({ length: MAX_CUSTOM_LABELS }, (_, i) => ({ key: `c${i}`, name: `C${i}`, color: PALETTE[i % PALETTE.length] })) })
   assert.ok(validateLabelInput({ key: 'overflow', name: 'x', color: '#ef4444' }, many))
+})
+
+test('normalizeHex：#RRGGBB 规范化、#RGB 简写展开、非法返回 null', () => {
+  assert.equal(normalizeHex('#ABC'), '#aabbcc')
+  assert.equal(normalizeHex(' #A1B2C3 '), '#a1b2c3')
+  assert.equal(normalizeHex('#abcdef'), '#abcdef')
+  assert.equal(normalizeHex('#12345'), null)
+  assert.equal(normalizeHex('red'), null)
+  assert.equal(normalizeHex(''), null)
+  assert.equal(normalizeHex(undefined), null)
+  assert.equal(normalizeHex(null), null)
 })
 
 test('generateLabelKey：规范化、唯一性、非法首字符加前缀', () => {

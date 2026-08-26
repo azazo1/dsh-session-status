@@ -131,6 +131,12 @@ test('bundle 内联纯逻辑与 status-store 行为一致（漂移护栏）', ()
     assert.deepEqual(json(u.clearOverride(ov, key)), json(store.clearOverride(ov, key)), `clearOverride(${key}) value`)
   }
 
+  // normalizeHex 一致（#RGB 简写展开 / 大小写 / 非法回退）
+  const hexSamples = ['#ABC', '#abc', ' #A1B2C3 ', '#abcdef', '#12345', 'red', '', undefined, null]
+  for (const sample of hexSamples) {
+    assert.equal(u.normalizeHex(sample), store.normalizeHex(sample), `normalizeHex(${String(sample)})`)
+  }
+
   console.log('client-shape drift-guard OK')
 })
 
@@ -452,6 +458,19 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
   assert.ok(reset, '覆盖后应出现「恢复默认」')
   reset.props.onClick()
   assert.deepEqual(JSON.parse(JSON.stringify(scopeCalls.pop())), ['overrides', 'UNSET'])
+
+  // 自定义行应有任意 hex 颜色输入（value 为标签当前色）
+  scopeSnapshot.value = {
+    labels: [{ key: 'c1', name: '自定义', color: '#123456', icon: 'tag', builtin: false }],
+    sessions: {}, overrides: {},
+  }
+  const tree3 = renderElement(settingsRenderer({}))
+  const inputs = walk(tree3, n => n.type === 'input')
+  const hexInputs = inputs.filter(i => i.props.title === '任意颜色 #RRGGBB（或 #RGB 简写）')
+  assert.ok(hexInputs.length >= 1, '自定义行应有 hex 颜色输入')
+  assert.equal(hexInputs[0].props.value, '#123456')
+  // 新增表单也应有 hex 输入
+  assert.ok(hexInputs.length >= 2, '新增表单与自定义行都应有 hex 输入')
 
   console.log('client-shape builtin-override wiring OK')
 })
