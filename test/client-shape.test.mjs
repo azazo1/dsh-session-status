@@ -101,3 +101,104 @@ test('bundle 内联纯逻辑与 status-store 行为一致（漂移护栏）', ()
 
   console.log('client-shape drift-guard OK')
 })
+
+test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死代码）', () => {
+  // react hooks mock：渲染不触发副作用，点击行为通过重新渲染读取最新 snapshot。
+  const reactMock = {
+    createElement(type, props, ...children) { return { type, props: props || {}, children } },
+    useState(init) { return [init, () => {}] },
+    useReducer(reducer, init) { return [init, () => {}] },
+    useRef(init) { return { current: init } },
+    useEffect() {},
+  }
+
+  let captured2 = null
+  const sandbox2 = {
+    window: {
+      __ModuleLoader__: {
+        load({ factory }) {
+          captured2 = factory((name) => (name === 'react' ? reactMock : {}))
+        },
+      },
+    },
+    document: {
+      readyState: 'complete',
+      body: {},
+      addEventListener() {},
+      removeEventListener() {},
+      querySelectorAll() { return [] },
+      createElement() { return { setAttribute() {}, style: {} } },
+    },
+    MutationObserver: function () { return { observe() {}, disconnect() {} } },
+    requestAnimationFrame() { return 1 },
+    cancelAnimationFrame() {},
+  }
+  vm.createContext(sandbox2)
+  vm.runInContext(code, sandbox2)
+
+  let headerRenderer = null
+  let scopeSnapshot = { status: 'ready', value: { sessions: { s1: 'active' } } }
+  const scopeCalls = []
+  const scopeMock = {
+    bind() { return scopeMock },
+    subscribe() { return () => {} },
+    getSnapshot() { return scopeSnapshot },
+    set(key, value) { scopeCalls.push([key, value]) },
+    unset(key) { scopeCalls.push([key, 'UNSET']) },
+  }
+  const ctx = {
+    settingsScope: { bind() { return scopeMock } },
+    sessions: { list: { subscribe() { return () => {} }, getSnapshot() { return { phase: 'ready', ids: ['s1'] } } } },
+    slots: {
+      inject(name, fn) {
+        const reg = fn()
+        if (name === 'conversation.session.header.utilities') headerRenderer = reg.renderer
+      },
+      register(opts, renderer) { return { opts, renderer } },
+    },
+    effect() {},
+  }
+  captured2.apply(ctx)
+  assert.ok(typeof headerRenderer === 'function', 'header slot renderer must be registered')
+
+  // renderer 返回的是 <StatusPill/> 组件元素，需递归渲染成宿主元素树。
+  const renderElement = (el) => {
+    if (typeof el.type === 'function') return renderElement(el.type(el.props))
+    return { type: el.type, props: el.props, children: (el.children || []).map(renderElement) }
+  }
+  const renderPillTree = () => renderElement(headerRenderer({ sessionId: 's1' }))
+
+  const clickPill = () => {
+    const tree = renderPillTree()
+    const pill = tree.children[0]
+    assert.equal(pill.type, 'button')
+    pill.props.onClick({ stopPropagation() {} })
+  }
+
+  const json = (value) => JSON.parse(JSON.stringify(value))
+
+  // active -> done -> paused -> (无状态，unset)
+  clickPill()
+  assert.deepEqual(json(scopeCalls.pop()), json(['sessions', { s1: 'done' }]))
+  scopeSnapshot.value.sessions = { s1: 'done' }
+  clickPill()
+  assert.deepEqual(json(scopeCalls.pop()), json(['sessions', { s1: 'paused' }]))
+  scopeSnapshot.value.sessions = { s1: 'paused' }
+  clickPill()
+  assert.deepEqual(json(scopeCalls.pop()), json(['sessions', 'UNSET']))
+
+  // 自定义标签不参与循环，直接回到 active
+  scopeSnapshot.value.sessions = { s1: 'todo' }
+  clickPill()
+  assert.deepEqual(json(scopeCalls.pop()), json(['sessions', { s1: 'active' }]))
+
+  // 下拉箭头单独负责开合菜单：其 onClick 不写 settings
+  scopeCalls.length = 0
+  const tree = renderPillTree()
+  const caret = tree.children[1]
+  assert.equal(caret.type, 'button')
+  caret.props.onClick({ stopPropagation() {} })
+  assert.equal(scopeCalls.length, 0, 'caret click must not write settings')
+
+  console.log('client-shape pill-cycle wiring OK')
+})
