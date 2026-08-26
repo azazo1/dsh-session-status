@@ -202,3 +202,130 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
 
   console.log('client-shape pill-cycle wiring OK')
 })
+
+test('hover 卡状态注入接线（renderAll 把插件状态追加进 portal 卡内容列）', () => {
+  // 伪造 DOM：一张 portal 的会话 hover 卡（role=button + 内联 left/top 定位 + 标题行）
+  const fakeEl = () => {
+    const el = {
+      children: [], attrs: {}, style: {}, textContent: '', innerHTML: '',
+      setAttribute(k, v) { el.attrs[k] = v },
+      getAttribute(k) { return el.attrs[k] },
+      appendChild(c) { el.children.push(c); return c },
+      remove() {},
+    }
+    return el
+  }
+  const container = fakeEl()
+  const titleNode = fakeEl()
+  titleNode.textContent = '我的会话'
+  titleNode.parentElement = container
+  const card = fakeEl()
+  card.attrs.style = 'left: 120px; top: 96px;'
+  card.textContent = '我的会话5分钟前空闲'
+  card.querySelectorAll = () => [titleNode]
+
+  const nodes = []
+  let captured = null
+  const sandbox = {
+    window: {
+      __ModuleLoader__: {
+        load({ factory }) { captured = factory((name) => (name === 'react' ? { createElement() { return {} }, useState: (v) => [v, () => {}], useReducer: (_, v) => [v, () => {}], useRef: () => ({ current: null }), useEffect() {} } : {})) },
+      },
+    },
+    document: {
+      readyState: 'complete',
+      body: {},
+      addEventListener() {},
+      removeEventListener() {},
+      createElement() { return fakeEl() },
+      querySelectorAll(sel) {
+        if (sel === 'div[role="button"]') return [card]
+        return []
+      },
+    },
+    MutationObserver: function () { return { observe() {}, disconnect() {} } },
+    requestAnimationFrame() { return 1 },
+    cancelAnimationFrame() {},
+  }
+  vm.createContext(sandbox)
+  vm.runInContext(code, sandbox)
+
+  const subs = []
+  const scopeCalls = []
+  const scopeSnapshot = { status: 'ready', value: { sessions: { s1: 'active' } } }
+  const scopeMock = {
+    bind() { return scopeMock },
+    subscribe(cb) { subs.push(cb); return () => {} },
+    getSnapshot() { return scopeSnapshot },
+    set(key, value) { scopeCalls.push([key, value]) },
+    unset(key) { scopeCalls.push([key, 'UNSET']) },
+  }
+  const ctx = {
+    settingsScope: { bind() { return scopeMock } },
+    sessions: {
+      list: {
+        subscribe() { return () => {} },
+        getSnapshot() { return { phase: 'ready', ids: ['s1'], byId: { s1: { displayTitle: '我的会话', blank: false } } } },
+      },
+    },
+    slots: { inject() {}, register() {} },
+    effect() {},
+  }
+  captured.apply(ctx)
+  assert.ok(subs.length >= 1, 'scope.subscribe 必须捕获 renderAll')
+
+  // 触发统一重渲染（scope 变更回调 = renderAll）
+  subs[0]()
+  assert.equal(container.children.length, 1, 'hover 卡内容列应注入一行状态')
+  const line = container.children[0]
+  assert.equal(line.attrs['data-owner'], 'dsh-session-status')
+  assert.equal(line.attrs['data-owner-part'], 'hover')
+  assert.equal(line.attrs['data-session-id'], 's1')
+  assert.ok(Array.isArray(line.children) && line.children.length === 2, 'icon + 名称两个子节点')
+  assert.ok(line.children[1].textContent === '进行中', '注入文本为标签名')
+  assert.ok(line.children[0].innerHTML.includes('M13 2 3 14h7l-1 8 10-12h-7l1-8z'), 'active 标签用 bolt 象征 icon')
+
+  // 无状态会话 → 不注入（也不报错）
+  container.children.length = 0
+  scopeSnapshot.value.sessions = {}
+  subs[0]()
+  assert.equal(container.children.length, 0, '无状态会话不注入 hover 行')
+
+  // 标题重复 → 不注入（宁可漏不可错）
+  container.children.length = 0
+  scopeSnapshot.value.sessions = { s1: 'active' }
+  const dupCtx = {
+    settingsScope: { bind() { return scopeMock } },
+    sessions: {
+      list: {
+        subscribe() { return () => {} },
+        getSnapshot() {
+          return {
+            phase: 'ready', ids: ['s1', 's2'],
+            byId: {
+              s1: { displayTitle: '我的会话', blank: false },
+              s2: { displayTitle: '我的会话', blank: false },
+            },
+          }
+        },
+      },
+    },
+    slots: { inject() {}, register() {} },
+    effect() {},
+  }
+  const scopeMock2 = {
+    bind() { return scopeMock2 },
+    subscribe() { return () => {} },
+    getSnapshot() { return scopeSnapshot },
+    set() {}, unset() {},
+  }
+  dupCtx.settingsScope = { bind() { return scopeMock2 } }
+  const subs2 = []
+  scopeMock2.subscribe = (cb) => { subs2.push(cb); return () => {} }
+  const before = container.children.length
+  captured.apply(dupCtx)
+  subs2[0]()
+  assert.equal(container.children.length, before, '重复标题不注入 hover 行')
+
+  console.log('client-shape hover-injection wiring OK')
+})
