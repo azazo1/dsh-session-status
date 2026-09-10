@@ -1,4 +1,5 @@
 node_modules/
+.tmp/
 .npm-cache/
 .npmrc
 *.tgz
