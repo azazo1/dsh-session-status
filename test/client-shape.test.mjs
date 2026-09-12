@@ -26,6 +26,60 @@ const sandbox = {
 vm.createContext(sandbox)
 vm.runInContext(code, sandbox)
 
+/**
+ * 假的 host 路由: 在内存里维护状态映射, 记录每次请求, 供用例断言。
+ * client 只依赖 fetch 的 { ok, status, json() } 接口。
+ * @param initial - 初始 会话 -> 标签 key 映射。
+ */
+function createHostStub(initial = {}) {
+  const state = { statuses: { ...initial }, requests: [] }
+  const respond = body => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
+  function fetchStub(path, options) {
+    const method = (options && options.method) || 'GET'
+    const body = options && options.body ? JSON.parse(options.body) : null
+    state.requests.push({ path, method, body })
+    if (method === 'POST' && path.endsWith('/prune')) {
+      const live = new Set(body.liveIds)
+      let removed = 0
+      for (const id of Object.keys(state.statuses)) {
+        if (!live.has(id)) {
+          delete state.statuses[id]
+          removed += 1
+        }
+      }
+      return respond({ statuses: { ...state.statuses }, removed })
+    }
+    if (method === 'POST' && path.endsWith('/status')) {
+      if (body.labelKey === null) delete state.statuses[body.sessionId]
+      else state.statuses[body.sessionId] = body.labelKey
+      return respond({ statuses: { ...state.statuses } })
+    }
+    return respond({ statuses: { ...state.statuses } })
+  }
+  return { state, fetch: fetchStub }
+}
+
+/** 等一轮宏任务, 让 apply() 触发的首次拉取与写后回填落地。 */
+function tick() {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
+
+/** 取某条路由上最后一次请求 (没有则返回 null)。 */
+function lastRequest(host, suffix) {
+  for (let i = host.state.requests.length - 1; i >= 0; i -= 1) {
+    if (host.state.requests[i].path.endsWith(suffix)) return host.state.requests[i]
+  }
+  return null
+}
+
+/** sandbox 里 window/document 都需要的事件与定时器接口。 */
+function domGlobals() {
+  return {
+    addEventListener() {},
+    removeEventListener() {},
+  }
+}
+
 test('bundle factory 执行并导出契约形状', () => {
   assert.ok(captured !== null, 'bundle factory did not run')
   const { inject, apply, __statusUtils } = captured
@@ -67,13 +121,10 @@ test('bundle 内联纯逻辑与 status-store 行为一致（漂移护栏）', ()
     assert.equal(u.nextSessionStatus(input), store.nextSessionStatus(input), `nextSessionStatus(${String(input)})`)
   }
 
-  // assignStatus / clearStatus / pruneSessions 一致
+  // assignStatus 一致（浏览器侧乐观更新）
   const sessions = { a: 'active', b: 'done' }
   assert.deepEqual(json(u.assignStatus(sessions, 'c', 'paused')), json(store.assignStatus(sessions, 'c', 'paused')))
   assert.deepEqual(json(u.assignStatus(sessions, 'a', null)), json(store.assignStatus(sessions, 'a', null)))
-  assert.deepEqual(json(u.pruneSessions({ a: 'active', b: 'done' }, new Set(['b']))),
-    json(store.pruneSessions({ a: 'active', b: 'done' }, new Set(['b']))))
-  assert.equal(u.pruneSessions({ a: 'active' }, new Set(['a'])), undefined)
 
   // labelIconKey 一致（内置象征 icon 映射）
   for (const key of ['active', 'done', 'paused', 'todo', 'whatever', undefined, '']) {
@@ -140,8 +191,8 @@ test('bundle 内联纯逻辑与 status-store 行为一致（漂移护栏）', ()
   console.log('client-shape drift-guard OK')
 })
 
-test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死代码）', () => {
-  // react hooks mock：渲染不触发副作用，点击行为通过重新渲染读取最新 snapshot。
+test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死代码）', async () => {
+  // react hooks mock：渲染不触发副作用，点击行为通过重新渲染读取最新快照。
   const reactMock = {
     createElement(type, props, ...children) { return { type, props: props || {}, children } },
     useState(init) { return [init, () => {}] },
@@ -150,6 +201,7 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
     useEffect() {},
   }
 
+  const host = createHostStub({ s1: 'active' })
   let captured2 = null
   const sandbox2 = {
     window: {
@@ -158,10 +210,13 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
           captured2 = factory((name) => (name === 'react' ? reactMock : {}))
         },
       },
+      addEventListener() {},
+      removeEventListener() {},
     },
     document: {
       readyState: 'complete',
       body: {},
+      visibilityState: 'visible',
       addEventListener() {},
       removeEventListener() {},
       querySelectorAll() { return [] },
@@ -170,12 +225,15 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
     MutationObserver: function () { return { observe() {}, disconnect() {} } },
     requestAnimationFrame() { return 1 },
     cancelAnimationFrame() {},
+    setInterval() { return 1 },
+    clearInterval() {},
+    fetch: host.fetch,
   }
   vm.createContext(sandbox2)
   vm.runInContext(code, sandbox2)
 
   let headerRenderer = null
-  let scopeSnapshot = { status: 'ready', value: { sessions: { s1: 'active' } } }
+  const scopeSnapshot = { status: 'ready', value: { labels: [] } }
   const scopeCalls = []
   const scopeMock = {
     bind() { return scopeMock },
@@ -198,6 +256,7 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
   }
   captured2.apply(ctx)
   assert.ok(typeof headerRenderer === 'function', 'header slot renderer must be registered')
+  await tick()
 
   // renderer 返回的是 <StatusPill/> 组件元素，需递归渲染成宿主元素树。
   const renderElement = (el) => {
@@ -215,42 +274,62 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
 
   const json = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)))
 
-  // active -> done -> paused -> (无状态，unset)
+  // 首次拉取把 host 快照灌进本地镜像
+  assert.equal(host.state.requests[0].path.endsWith('/statuses'), true, '首次拉取必须走 /statuses')
+
+  // active -> done -> paused -> 无状态（labelKey null）
   clickPill()
-  assert.deepEqual(json(scopeCalls.pop()), json(['sessions', { s1: 'done' }]))
-  scopeSnapshot.value.sessions = { s1: 'done' }
+  assert.deepEqual(json(lastRequest(host, '/status').body), json({ sessionId: 's1', labelKey: 'done' }))
+  await tick()
   clickPill()
-  assert.deepEqual(json(scopeCalls.pop()), json(['sessions', { s1: 'paused' }]))
-  scopeSnapshot.value.sessions = { s1: 'paused' }
+  assert.deepEqual(json(lastRequest(host, '/status').body), json({ sessionId: 's1', labelKey: 'paused' }))
+  await tick()
   clickPill()
-  assert.deepEqual(json(scopeCalls.pop()), json(['sessions', 'UNSET']))
+  assert.deepEqual(json(lastRequest(host, '/status').body), json({ sessionId: 's1', labelKey: null }))
+  await tick()
 
   // 自定义标签不参与循环，直接回到 active
-  scopeSnapshot.value.sessions = { s1: 'todo' }
+  host.state.statuses.s1 = 'todo'
   clickPill()
-  assert.deepEqual(json(scopeCalls.pop()), json(['sessions', { s1: 'active' }]))
+  assert.deepEqual(json(lastRequest(host, '/status').body), json({ sessionId: 's1', labelKey: 'active' }))
+  await tick()
 
-  // 下拉箭头单独负责开合菜单：其 onClick 不写 settings
+  // 写完后会带当前会话列表去 host 做惰性清理
+  const prune = lastRequest(host, '/prune')
+  assert.ok(prune, '写完状态后应触发一次 prune')
+  assert.deepEqual(json(prune.body), json({ liveIds: ['s1'] }))
+
+  // 下拉箭头单独负责开合菜单：其 onClick 不写 settings、也不发请求
   scopeCalls.length = 0
+  const requestsBefore = host.state.requests.length
   const tree = renderPillTree()
   const caret = tree.children[1]
   assert.equal(caret.type, 'button')
   caret.props.onClick({ stopPropagation() {} })
   assert.equal(scopeCalls.length, 0, 'caret click must not write settings')
+  assert.equal(host.state.requests.length, requestsBefore, 'caret click must not call the host')
 
   console.log('client-shape pill-cycle wiring OK')
 })
 
-test('hover 卡状态注入接线（renderAll 把插件状态追加进 portal 卡内容列）', () => {
+test('hover 卡状态注入接线（renderAll 把插件状态追加进 portal 卡内容列）', async () => {
   // 伪造 DOM：一张 portal 的会话 hover 卡（role=button + 内联 left/top 定位 + 标题行）
+  const created = []
   const fakeEl = () => {
     const el = {
-      children: [], attrs: {}, style: {}, textContent: '', innerHTML: '',
+      children: [], attrs: {}, style: {}, textContent: '', innerHTML: '', parentNode: null,
       setAttribute(k, v) { el.attrs[k] = v },
       getAttribute(k) { return el.attrs[k] },
-      appendChild(c) { el.children.push(c); return c },
-      remove() {},
+      appendChild(c) { c.parentNode = el; el.children.push(c); return c },
+      remove() {
+        const parent = el.parentNode
+        if (!parent) return
+        const index = parent.children.indexOf(el)
+        if (index !== -1) parent.children.splice(index, 1)
+        el.parentNode = null
+      },
     }
+    created.push(el)
     return el
   }
   const container = fakeEl()
@@ -263,34 +342,45 @@ test('hover 卡状态注入接线（renderAll 把插件状态追加进 portal �
   card.querySelectorAll = () => [titleNode]
 
   const nodes = []
+  const intervalCallbacks = []
+  const host = createHostStub({ s1: 'active' })
   let captured = null
   const sandbox = {
     window: {
       __ModuleLoader__: {
         load({ factory }) { captured = factory((name) => (name === 'react' ? { createElement() { return {} }, useState: (v) => [v, () => {}], useReducer: (_, v) => [v, () => {}], useRef: () => ({ current: null }), useEffect() {} } : {})) },
       },
+      addEventListener() {},
+      removeEventListener() {},
     },
     document: {
       readyState: 'complete',
       body: {},
+      visibilityState: 'visible',
       addEventListener() {},
       removeEventListener() {},
       createElement() { return fakeEl() },
       querySelectorAll(sel) {
         if (sel === 'div[role="button"]') return [card]
+        if (sel === '[data-owner="dsh-session-status"]') {
+          return created.filter(el => el.attrs['data-owner'] === 'dsh-session-status')
+        }
         return []
       },
     },
     MutationObserver: function () { return { observe() {}, disconnect() {} } },
     requestAnimationFrame() { return 1 },
     cancelAnimationFrame() {},
+    setInterval(fn) { intervalCallbacks.push(fn); return 1 },
+    clearInterval() {},
+    fetch: host.fetch,
   }
   vm.createContext(sandbox)
   vm.runInContext(code, sandbox)
 
   const subs = []
   const scopeCalls = []
-  const scopeSnapshot = { status: 'ready', value: { sessions: { s1: 'active' } } }
+  const scopeSnapshot = { status: 'ready', value: { labels: [] } }
   const scopeMock = {
     bind() { return scopeMock },
     subscribe(cb) { subs.push(cb); return () => {} },
@@ -311,6 +401,13 @@ test('hover 卡状态注入接线（renderAll 把插件状态追加进 portal �
   }
   captured.apply(ctx)
   assert.ok(subs.length >= 1, 'scope.subscribe 必须捕获 renderAll')
+  await tick()
+
+  // 轮询回调 → 重新拉取 host 快照
+  const refreshFromHost = async () => {
+    for (const fn of intervalCallbacks) fn()
+    await tick()
+  }
 
   // 触发统一重渲染（scope 变更回调 = renderAll）
   subs[0]()
@@ -325,13 +422,15 @@ test('hover 卡状态注入接线（renderAll 把插件状态追加进 portal �
 
   // 无状态会话 → 不注入（也不报错）
   container.children.length = 0
-  scopeSnapshot.value.sessions = {}
+  delete host.state.statuses.s1
+  await refreshFromHost()
   subs[0]()
   assert.equal(container.children.length, 0, '无状态会话不注入 hover 行')
 
   // 标题重复 → 不注入（宁可漏不可错）
   container.children.length = 0
-  scopeSnapshot.value.sessions = { s1: 'active' }
+  host.state.statuses.s1 = 'active'
+  await refreshFromHost()
   const dupCtx = {
     settingsScope: { bind() { return scopeMock } },
     sessions: {
@@ -360,10 +459,10 @@ test('hover 卡状态注入接线（renderAll 把插件状态追加进 portal �
   dupCtx.settingsScope = { bind() { return scopeMock2 } }
   const subs2 = []
   scopeMock2.subscribe = (cb) => { subs2.push(cb); return () => {} }
-  const before = container.children.length
+  container.children.length = 0
   captured.apply(dupCtx)
   subs2[0]()
-  assert.equal(container.children.length, before, '重复标题不注入 hover 行')
+  assert.equal(container.children.length, 0, '重复标题不注入 hover 行')
 
   console.log('client-shape hover-injection wiring OK')
 })
@@ -383,10 +482,13 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
       __ModuleLoader__: {
         load({ factory }) { captured = factory((name) => (name === 'react' ? reactMock : {})) },
       },
+      addEventListener() {},
+      removeEventListener() {},
     },
     document: {
       readyState: 'complete',
       body: {},
+      visibilityState: 'visible',
       addEventListener() {},
       removeEventListener() {},
       querySelectorAll() { return [] },
@@ -395,13 +497,16 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
     MutationObserver: function () { return { observe() {}, disconnect() {} } },
     requestAnimationFrame() { return 1 },
     cancelAnimationFrame() {},
+    setInterval() { return 1 },
+    clearInterval() {},
+    fetch: createHostStub().fetch,
   }
   vm.createContext(sandbox)
   vm.runInContext(code, sandbox)
 
   let settingsRenderer = null
   const scopeCalls = []
-  const scopeSnapshot = { status: 'ready', value: { labels: [], sessions: {} } }
+  const scopeSnapshot = { status: 'ready', value: { labels: [] } }
   const scopeMock = {
     bind() { return scopeMock },
     subscribe() { return () => {} },
@@ -462,7 +567,7 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
   // 自定义行应有任意 hex 颜色输入（value 为标签当前色）
   scopeSnapshot.value = {
     labels: [{ key: 'c1', name: '自定义', color: '#123456', icon: 'tag', builtin: false }],
-    sessions: {}, overrides: {},
+    overrides: {},
   }
   const tree3 = renderElement(settingsRenderer({}))
   const inputs = walk(tree3, n => n.type === 'input')

@@ -6,9 +6,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  BUILTIN_LABELS, PALETTE, MAX_CUSTOM_LABELS, LABEL_KEY_PATTERN, LABEL_ICONS,
-  resolveLabels, findLabel, labelIconKey, resolveLabelIcon, nextSessionStatus, assignStatus, clearStatus,
-  pruneSessions, validateLabelInput, generateLabelKey, nextPaletteColor,
+  BUILTIN_LABELS, PALETTE, MAX_CUSTOM_LABELS, LABEL_KEY_PATTERN, LABEL_ICONS, RECORD_KEY_PATTERN,
+  resolveLabels, findLabel, labelIconKey, resolveLabelIcon, nextSessionStatus, assignStatus,
+  isRecordKeySafe, validateLabelInput, generateLabelKey, nextPaletteColor,
   builtinDefaultColor, applyBuiltinOverride, setOverride, clearOverride, normalizeHex,
 } from '../lib/status-store.js'
 
@@ -151,25 +151,27 @@ test('nextSessionStatus：无状态→active→done→paused→无状态(null)�
   assert.equal(nextSessionStatus('weird'), 'active')
 })
 
-test('assignStatus / clearStatus：不可变、设置与清除', () => {
+test('assignStatus：不可变、设置与清除', () => {
   const sessions = { a: 'active' }
   const next = assignStatus(sessions, 'b', 'done')
   assert.deepEqual(next, { a: 'active', b: 'done' })
   assert.deepEqual(sessions, { a: 'active' })          // 原对象不变
   assert.deepEqual(assignStatus(next, 'a', null), { b: 'done' })
   assert.deepEqual(assignStatus(next, 'b', ''), { a: 'active' })
-  assert.deepEqual(clearStatus({ a: 'active' }, 'a'), {})
+  assert.deepEqual(assignStatus({ a: 'active' }, 'a', undefined), {})
   assert.deepEqual(assignStatus(undefined, 'x', 'paused'), { x: 'paused' })
 })
 
-test('pruneSessions：清理失效会话；无失效返回 undefined（不写）', () => {
-  const sessions = { a: 'active', b: 'done', c: 'paused' }
-  const live = new Set(['a', 'c'])
-  const pruned = pruneSessions(sessions, live)
-  assert.deepEqual(pruned, { a: 'active', c: 'paused' })
-  assert.equal(pruneSessions(sessions, new Set(['a', 'b', 'c'])), undefined)
-  assert.equal(pruneSessions(undefined, live), undefined)
-  assert.equal(pruneSessions(null, live), undefined)
+test('isRecordKeySafe：storage per-record 布局的 key 规则', () => {
+  assert.equal(isRecordKeySafe('session-3a1b2c3d-4e5f-6789-abcd-ef0123456789'), true)
+  assert.equal(isRecordKeySafe('a_b-1'), true)
+  assert.equal(isRecordKeySafe(''), false)                 // 空串
+  assert.equal(isRecordKeySafe('has space'), false)
+  assert.equal(isRecordKeySafe('has/slash'), false)
+  assert.equal(isRecordKeySafe('has.dot'), false)
+  assert.equal(isRecordKeySafe(undefined), false)
+  assert.equal(isRecordKeySafe(null), false)
+  assert.match('session-1', RECORD_KEY_PATTERN)
 })
 
 test('validateLabelInput：名称/key/重复/颜色/上限校验', () => {
@@ -219,6 +221,6 @@ test('nextPaletteColor：优先未用色，用尽回退第一个', () => {
 })
 
 console.log('status-store OK: all', Object.keys({
-  resolveLabels, findLabel, labelIconKey, resolveLabelIcon, nextSessionStatus, assignStatus, clearStatus,
-  pruneSessions, validateLabelInput, generateLabelKey, nextPaletteColor,
+  resolveLabels, findLabel, labelIconKey, resolveLabelIcon, nextSessionStatus, assignStatus,
+  isRecordKeySafe, validateLabelInput, generateLabelKey, nextPaletteColor,
 }).length, 'cases passed')
