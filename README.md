@@ -60,15 +60,12 @@ v0 曾把 `sessions` (会话 → 标签 key) 也放在 settings 里; 升级后�
 
 ## 开发
 
-```powershell
-pnpm install                        # 只需要 zod（storage domain 的记录 schema）
-node --check lib\index.js; node --check lib\status-store.js; node --check lib\client.js
-node test\status-store.test.mjs     # 纯逻辑单测（主模块方式，沙箱下勿用 node --test）
-node test\migration.test.mjs        # settings v0 → v1 迁移（版本门控 / 导入 / 清理）
-node test\domain-service.test.mjs   # 会话状态服务（假 domain handle）
-node test\client-shape.test.mjs     # client bundle 契约：inject 是服务名 + 内联逻辑防漂移 + 路由接线
-node scripts\smoke-hover.mjs        # CDP 冒烟：hover 卡状态注入 + 设置页色板（需 DSH GUI 在 127.0.0.1:3180）
+```shell
+pnpm install
+pnpm test
 ```
+
+测试包括状态存储, 迁移和 HTTP 接线, 以及真实 React DOM 下的同名行, 搜索结果, portal 悬浮卡片, 重排, 改名, 状态清除和卸载. 渲染测试独立加载 `lib/client.js`, 不加载其他插件.
 
 发布（交互终端，WebAuthn 通行密钥流程；需先配置 npm token：`NPM_PUBLISH_TOKEN` 或 `~/.dsh/secrets/npm-token.txt`）：
 
@@ -81,8 +78,10 @@ pwsh -File scripts\publish-interactive.ps1
 - **双轨制**：`package.json` 的 `dsh.client.inject` 写 NPM 包名；浏览器 bundle（`lib/client.js`）的 `exports.inject` 写 Cordis 服务名（`slots` / `settingsScope` / `sessions`）——写错会导致 web boot 永久 pending。
 - **host 一半按服务可用性装配**：settings 注册在插件 `apply` 里直接做；storage domain + HTTP 路由放在 `ctx.inject(['storageDomain', 'webServer'], …)` 子 fiber 里, 缺任一服务（例如 headless 组合）时只失去状态读写, 插件仍可加载。
 - **浏览器侧数据通道**：状态映射只能通过 host 路由读写, client 本地保留一份镜像做乐观更新, 写后回填服务端快照, 另有 15s 轮询与窗口聚焦/标签页可见时的立即刷新, 覆盖其它标签页或浏览器造成的变更。
-- **列表行无官方槽**：行级状态点走 DOM 注入（`[role="treeitem"][aria-selected]` + 标题反查 session id + MutationObserver/RAF 节流），`data-owner` 标记自清理；标题重复行宁可漏不可错。
-- **hover 卡无官方槽**：会话 hover 卡是 portal 到 body 的复制卡（`div[role="button"]` + 内联 left/top 定位），按标题反查唯一会话，把状态行追加进卡内容列；无状态/标题重复不注入。
+- **列表行无官方槽**: 从 React 行组件的 key 与 `node.id` / `result.id` 交叉确认 session id, 再匹配会话快照, 支持同名分叉, 改名和列表重排. 普通行和搜索结果都可显示标签, 无状态或空白会话不注入.
+- **hover 卡无官方槽**: 沿 React portal 的组件归属确认会话 id, 将状态追加到卡内容列; 不受同名标题影响. 点击复制后临时显示的反馈不追加状态.
+- **宿主结构依赖**: 行和 hover 卡依赖 DSH 的 React 挂载信息, 这是内部结构而非官方 API. 无法确认 key, props 与快照的一致性时不注入, 防止标错会话; 宿主更换行结构后需重新验证. 本插件独立工作, 不依赖其他状态插件.
+- **DOM 更新**: 只更新变化的标记, 移除失效节点; MutationObserver/RAF 对齐在下一轮收敛, 不反复删除并重建未变化的图标.
 - **内置态不可删**：settings 的 `mergeLayers` 对数组是整体替换，用户写入 labels 后 resolved 不再含 base 内置项——客户端 `resolveLabels` 始终把内置三态合并回来；内置颜色覆盖存于 user 层 `overrides`，点默认色即清除。
 - **惰性清理**：会话删除后其记录由 client 写状态时带 `liveIds` 触发一次 host 端 prune 清掉 (每条记录单独成文件, 删除即逐个删文件)。
 - **迁移不留兼容层**：settings 用户层的 `sessions` 只在迁移时读一次 (`ctx.settings.describe()` 的原始用户层), 迁完即删; 记录格式版本交给 storage domain 的 `version` / `compatibleVersions`。
