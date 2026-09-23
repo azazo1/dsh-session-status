@@ -47,7 +47,7 @@ export async function createHarness(initialStatuses = {}) {
     fetch: async () => ({ ok: true, json: async () => ({ statuses: { ...statuses } }) }),
   })
   bundle.apply({
-    settingsScope: { bind: () => ({ getSnapshot: () => scope, subscribe: subscribe(scopeListeners) }) },
+    configForms: { get: () => ({ getSnapshot: () => scope, subscribe: subscribe(scopeListeners) }) },
     sessions: { list: { getSnapshot: () => list, subscribe: subscribe(listListeners) } },
     slots: { inject() {} },
     effect(factory) { disposers.push(factory()) },

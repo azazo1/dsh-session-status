@@ -90,7 +90,7 @@ test('bundle factory 执行并导出契约形状', () => {
       throw new Error(`inject "${s}" looks like a package name; must be a service name`)
     }
   }
-  for (const required of ['slots', 'settingsScope', 'sessions']) {
+  for (const required of ['slots', 'configForms', 'sessions']) {
     assert.ok(inject.includes(required), `inject must include "${required}"`)
   }
   assert.equal(typeof apply, 'function', 'apply must be a function')
@@ -243,7 +243,7 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
     unset(key) { scopeCalls.push([key, 'UNSET']) },
   }
   const ctx = {
-    settingsScope: { bind() { return scopeMock } },
+    configForms: { get() { return scopeMock } },
     sessions: { list: { subscribe() { return () => {} }, getSnapshot() { return { phase: 'ready', ids: ['s1'] } } } },
     slots: {
       inject(name, fn) {
@@ -360,7 +360,7 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
     unset(key) { scopeCalls.push([key, 'UNSET']) },
   }
   const ctx = {
-    settingsScope: { bind() { return scopeMock } },
+    configForms: { get() { return scopeMock } },
     sessions: { list: { subscribe() { return () => {} }, getSnapshot() { return { phase: 'ready', ids: [], byId: {} } } } },
     slots: {
       inject(name, fn) {
