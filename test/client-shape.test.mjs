@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import * as store from '../lib/status-store.js'
+import { PRIMITIVES_MODULE, createPrimitivesStub } from './helpers/primitives-stub.mjs'
 
 const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 
@@ -188,6 +189,40 @@ test('bundle 内联纯逻辑与 status-store 行为一致（漂移护栏）', ()
     assert.equal(u.normalizeHex(sample), store.normalizeHex(sample), `normalizeHex(${String(sample)})`)
   }
 
+  // rgbaFromHex 一致（淡染底色 / 描边换算, alpha 夹到 [0, 1]）
+  assert.equal(u.rgbaFromHex('#22c55e', 0.1), 'rgba(34, 197, 94, 0.1)')
+  const rgbaSamples = [
+    ['#22c55e', 0.1], ['#ABC', 0.2], ['#aabbcc', 1], ['red', 0.5],
+    [undefined, 0.5], ['#000000', -1], ['#ffffff', 2], ['#123456', undefined],
+  ]
+  for (const [value, alpha] of rgbaSamples) {
+    assert.equal(u.rgbaFromHex(value, alpha), store.rgbaFromHex(value, alpha),
+      `rgbaFromHex(${String(value)}, ${String(alpha)})`)
+  }
+
+  // planAutoActive 一致（新会话默认进行中的判定: 基线, 快照未到位, 空白占位, 数字形 id 顺序）
+  const autoSamples = [
+    { enabled: false, armed: true, seenIds: ['s1'], ids: ['s1'] },
+    { enabled: true, armed: false, seenIds: [], ids: ['s1', 's2', 'blank'],
+      summaries: { s1: { blank: false }, s2: { blank: false }, blank: { blank: true } },
+      statuses: {}, statusesReady: true },
+    { enabled: true, armed: true, seenIds: ['s1'], ids: ['s1', 's2'],
+      summaries: { s1: { blank: false }, s2: { blank: false } }, statuses: {}, statusesReady: true },
+    { enabled: true, armed: true, seenIds: [], ids: ['s1'],
+      summaries: { s1: { blank: false } }, statuses: { s1: 'done' }, statusesReady: true },
+    { enabled: true, armed: true, seenIds: [], ids: ['s1'],
+      summaries: { s1: { blank: false } }, statuses: {}, statusesReady: false },
+    { enabled: true, armed: true, seenIds: [], ids: ['ghost'] },
+    { enabled: true, armed: false, seenIds: ['s1'], ids: ['s1', 's2'],
+      summaries: { s1: { blank: false }, s2: { blank: false } }, statuses: {}, statusesReady: true },
+    { enabled: true, armed: true, seenIds: [], ids: ['9', 's1'],
+      summaries: { 9: { blank: false }, s1: { blank: false } }, statuses: {}, statusesReady: true },
+  ]
+  for (const sample of autoSamples) {
+    assert.deepEqual(json(u.planAutoActive(sample)), json(store.planAutoActive(sample)),
+      `planAutoActive(${JSON.stringify(sample)})`)
+  }
+
   console.log('client-shape drift-guard OK')
 })
 
@@ -207,7 +242,8 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
     window: {
       __ModuleLoader__: {
         load({ factory }) {
-          captured2 = factory((name) => (name === 'react' ? reactMock : {}))
+          captured2 = factory(name => (name === 'react' ? reactMock
+            : name === PRIMITIVES_MODULE ? createPrimitivesStub(reactMock) : {}))
         },
       },
       addEventListener() {},
@@ -216,11 +252,14 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
     document: {
       readyState: 'complete',
       body: {},
+      head: { appendChild() {} },
+      documentElement: { appendChild() {} },
       visibilityState: 'visible',
       addEventListener() {},
       removeEventListener() {},
+      getElementById() { return null },
       querySelectorAll() { return [] },
-      createElement() { return { setAttribute() {}, style: {} } },
+      createElement() { return { id: '', textContent: '', setAttribute() {}, remove() {}, style: {} } },
     },
     MutationObserver: function () { return { observe() {}, disconnect() {} } },
     requestAnimationFrame() { return 1 },
@@ -260,19 +299,52 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
 
   // renderer 返回的是 <StatusPill/> 组件元素，需递归渲染成宿主元素树。
   const renderElement = (el) => {
-    if (typeof el.type === 'function') return renderElement(el.type(el.props))
-    return { type: el.type, props: el.props, children: (el.children || []).map(renderElement) }
+    // hooks mock 把 children 放在元素上, 真实 React 放在 props 里: 调用函数组件时补齐。
+    if (typeof el.type === 'function') return renderElement(el.type({ ...el.props, children: el.children }))
+    return { type: el.type, props: el.props || {}, children: (el.children || []).map(renderElement) }
+  }
+  /** 在 mock 元素树里按条件收集节点。 */
+  const walk = (node, pred, out = []) => {
+    if (node === null || node === undefined || typeof node !== 'object') return out
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, pred, out)
+      return out
+    }
+    if (pred(node)) out.push(node)
+    for (const child of (Array.isArray(node.children) ? node.children : [])) walk(child, pred, out)
+    return out
   }
   const renderPillTree = () => renderElement(headerRenderer({ sessionId: 's1' }))
+  const findByClass = (tree, className) => walk(tree, node => node.props.className === className)[0]
 
   const clickPill = () => {
-    const tree = renderPillTree()
-    const pill = tree.children[0]
+    const pill = findByClass(renderPillTree(), 'dss-pill-main')
     assert.equal(pill.type, 'button')
     pill.props.onClick({ stopPropagation() {} })
   }
 
   const json = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)))
+
+  // 视觉契约: 外层是原生 Menu 的锚点类 (与「在本地打开」的 menuAnchor 同款),
+  // 里面才是 split 形状 (类名 + CSS 变量), 下拉本体交给原生 Menu.
+  const shell = renderPillTree()
+  assert.equal(shell.props.className, 'dss-pill-anchor')
+  assert.equal(shell.props['data-menu-open'], 'false')
+  const split = findByClass(shell, 'dss-pill')
+  assert.equal(split.props['data-unset'], 'false')
+  const mainButton = findByClass(shell, 'dss-pill-main')
+  assert.equal(mainButton.props.style['--dss-tint'], 'rgba(34, 197, 94, 0.1)')
+  assert.equal(mainButton.props.style['--dss-tint-strong'], 'rgba(34, 197, 94, 0.2)')
+  const caretButton = findByClass(shell, 'dss-pill-caret')
+  assert.equal(caretButton.props['aria-haspopup'], 'menu')
+  assert.equal(caretButton.props['aria-expanded'], 'false')
+  // 展开符号用宿主原生图标组件 (与「在本地打开」同一个 IconChevronDownOutlineRegular).
+  assert.equal(caretButton.children.length, 1, '箭头半边只放图标')
+  const chevron = caretButton.children[0]
+  assert.equal(chevron.type, 'svg')
+  assert.equal(chevron.props['data-icon'], 'chevron-down')
+  assert.equal(chevron.props.width, 10)
+  assert.equal(chevron.props.viewBox, '0 0 16 16')
 
   // 首次拉取把 host 快照灌进本地镜像
   assert.equal(host.state.requests[0].path.endsWith('/statuses'), true, '首次拉取必须走 /statuses')
@@ -299,11 +371,10 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
   assert.ok(prune, '写完状态后应触发一次 prune')
   assert.deepEqual(json(prune.body), json({ liveIds: ['s1'] }))
 
-  // 下拉箭头单独负责开合菜单：其 onClick 不写 settings、也不发请求
+  // 下拉箭头只负责开合原生 Menu：其 onClick 不写 settings、也不发请求
   scopeCalls.length = 0
   const requestsBefore = host.state.requests.length
-  const tree = renderPillTree()
-  const caret = tree.children[1]
+  const caret = findByClass(renderPillTree(), 'dss-pill-caret')
   assert.equal(caret.type, 'button')
   caret.props.onClick({ stopPropagation() {} })
   assert.equal(scopeCalls.length, 0, 'caret click must not write settings')
@@ -312,7 +383,7 @@ test('StatusPill 的 pill 单击接入循环（nextSessionStatus 接线，非死
   console.log('client-shape pill-cycle wiring OK')
 })
 
-test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清除）', () => {
+test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清除）', async () => {
   const reactMock = {
     createElement(type, props, ...children) { return { type, props: props || {}, children } },
     useState(init) { return [init, () => {}] },
@@ -325,7 +396,10 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
   const sandbox = {
     window: {
       __ModuleLoader__: {
-        load({ factory }) { captured = factory((name) => (name === 'react' ? reactMock : {})) },
+        load({ factory }) {
+          captured = factory(name => (name === 'react' ? reactMock
+            : name === PRIMITIVES_MODULE ? createPrimitivesStub(reactMock) : {}))
+        },
       },
       addEventListener() {},
       removeEventListener() {},
@@ -333,11 +407,14 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
     document: {
       readyState: 'complete',
       body: {},
+      head: { appendChild() {} },
+      documentElement: { appendChild() {} },
       visibilityState: 'visible',
       addEventListener() {},
       removeEventListener() {},
+      getElementById() { return null },
       querySelectorAll() { return [] },
-      createElement() { return { setAttribute() {}, style: {} } },
+      createElement() { return { id: '', textContent: '', setAttribute() {}, remove() {}, style: {} } },
     },
     MutationObserver: function () { return { observe() {}, disconnect() {} } },
     requestAnimationFrame() { return 1 },
@@ -352,12 +429,14 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
   let settingsRenderer = null
   const scopeCalls = []
   const scopeSnapshot = { status: 'ready', value: { labels: [] } }
+  // 写入结果由 host 决定: 这里用 writeOk 模拟被拒绝的情况.
+  let writeOk = true
   const scopeMock = {
     bind() { return scopeMock },
     subscribe() { return () => {} },
     getSnapshot() { return scopeSnapshot },
-    set(key, value) { scopeCalls.push([key, value]) },
-    unset(key) { scopeCalls.push([key, 'UNSET']) },
+    set(key, value) { scopeCalls.push([key, value]); return Promise.resolve(writeOk) },
+    unset(key) { scopeCalls.push([key, 'UNSET']); return Promise.resolve(writeOk) },
   }
   const ctx = {
     configForms: {
@@ -383,7 +462,8 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
   const renderElement = (el) => {
     if (el === null || el === undefined || typeof el !== 'object') return el
     if (Array.isArray(el)) return el.map(renderElement)
-    if (typeof el.type === 'function') return renderElement(el.type(el.props))
+    // hooks mock 把 children 放在元素上, 真实 React 放在 props 里: 调用函数组件时补齐。
+    if (typeof el.type === 'function') return renderElement(el.type({ ...el.props, children: el.children }))
     return { type: el.type, props: el.props, children: (el.children || []).map(renderElement) }
   }
   const tree = renderElement(settingsRenderer({}))
@@ -427,6 +507,22 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
   assert.equal(hexInputs[0].props.value, '#123456')
   // 新增表单也应有 hex 输入
   assert.ok(hexInputs.length >= 2, '新增表单与自定义行都应有 hex 输入')
+
+  // 「新会话默认进行中」: 原生设置行 + 原生 Switch, 打开写 true, 关闭 unset (默认值不落盘).
+  // 写入中禁用与失败报错行需要真实 React 的 state, 放在 rendering 测试里覆盖.
+  const toggle = walk(tree3, node => node.props.role === 'switch')[0]
+  assert.ok(toggle, '配置卡片应有「新会话默认进行中」开关')
+  assert.equal(toggle.props['aria-checked'], 'false')
+  assert.equal(toggle.props['aria-label'], '新会话默认进行中')
+  assert.match(JSON.stringify(tree3), /会话第一次出现在列表里时自动记一条/, '开关行要带说明文案')
+  toggle.props.onClick()
+  assert.deepEqual(JSON.parse(JSON.stringify(scopeCalls.pop())), ['defaultActive', true])
+  scopeSnapshot.value = { labels: [], overrides: {}, defaultActive: true }
+  const tree4 = renderElement(settingsRenderer({}))
+  const toggleOn = walk(tree4, node => node.props.role === 'switch')[0]
+  assert.equal(toggleOn.props['aria-checked'], 'true', '开关应跟随 settings 里的值')
+  toggleOn.props.onClick()
+  assert.deepEqual(JSON.parse(JSON.stringify(scopeCalls.pop())), ['defaultActive', 'UNSET'])
 
   console.log('client-shape builtin-override wiring OK')
 })

@@ -10,6 +10,7 @@ import {
   resolveLabels, findLabel, labelIconKey, resolveLabelIcon, nextSessionStatus, assignStatus,
   isRecordKeySafe, validateLabelInput, generateLabelKey, nextPaletteColor,
   builtinDefaultColor, applyBuiltinOverride, setOverride, clearOverride, normalizeHex,
+  planAutoActive,
 } from '../lib/status-store.js'
 
 test('BUILTIN_LABELS：三态齐全、key 合法、颜色在色板、builtin 标记', () => {
@@ -220,7 +221,58 @@ test('nextPaletteColor：优先未用色，用尽回退第一个', () => {
   assert.equal(nextPaletteColor(allUsed), PALETTE[0])
 })
 
+test('planAutoActive：先取基线, 之后只补写首次出现且还没有记录的会话', () => {
+  const summaries = { s1: { blank: false }, s2: { blank: false }, s3: { blank: true } }
+  const plan = (input) => planAutoActive({ summaries, statuses: {}, statusesReady: true, ...input })
+
+  // 开关关闭: 不武装, 也不写, 进度清空
+  assert.deepEqual(
+    plan({ enabled: false, armed: true, seenIds: ['s1'], ids: ['s1'] }),
+    { armed: false, seenIds: [], targets: [] },
+  )
+
+  // 开关刚打开 (或页面刚载入) 的那一轮只取基线: 已有会话进 seen, 一个都不写
+  const armed = plan({ enabled: true, armed: false, seenIds: [], ids: ['s1', 's2', 's3'] })
+  assert.deepEqual(armed, { armed: true, seenIds: ['s1', 's2'], targets: [] })
+
+  // 新会话出现: 补一条 active, 已有会话不动
+  const added = plan({
+    enabled: true, armed: true, seenIds: armed.seenIds, ids: ['s1', 's2', 's3', 's4'],
+    summaries: { ...summaries, s4: { blank: false } },
+  })
+  assert.deepEqual(added.targets, ['s4'])
+  assert.deepEqual(added.seenIds, ['s1', 's2', 's4'])
+
+  // 已经有状态的会话不覆盖 (也不能重复写)
+  const keep = plan({ enabled: true, armed: true, seenIds: [], ids: ['s1'], statuses: { s1: 'done' } })
+  assert.deepEqual(keep.targets, [])
+  assert.deepEqual(keep.seenIds, ['s1'])
+
+  // 状态快照还没到位: 不判也不记, 留到下一轮
+  const waiting = plan({ enabled: true, armed: true, seenIds: [], ids: ['s1'], statusesReady: false })
+  assert.deepEqual(waiting, { armed: true, seenIds: [], targets: [] })
+
+  // 空白占位会话不算「已经出现」, 等它有内容后才补
+  const blank = plan({ enabled: true, armed: true, seenIds: [], ids: ['s3'] })
+  assert.deepEqual(blank, { armed: true, seenIds: [], targets: [] })
+  const grown = plan({ enabled: true, armed: true, seenIds: blank.seenIds, ids: ['s3'], summaries: { s3: { blank: false } } })
+  assert.deepEqual(grown.targets, ['s3'])
+
+  // 身份未知的会话留到下一轮, 不写也不记
+  assert.deepEqual(plan({ enabled: true, armed: true, seenIds: [], ids: ['ghost'] }), { armed: true, seenIds: [], targets: [] })
+
+  // 取基线时已经见过的会话不重复记录
+  assert.deepEqual(
+    plan({ enabled: true, armed: false, seenIds: ['s1'], ids: ['s1', 's2'] }),
+    { armed: true, seenIds: ['s1', 's2'], targets: [] },
+  )
+
+  // 手动清除过的会话 (已判过) 不会被自动补回
+  const cleared = plan({ enabled: true, armed: true, seenIds: ['s4'], ids: ['s4'], summaries: { s4: { blank: false } } })
+  assert.deepEqual(cleared.targets, [])
+})
+
 console.log('status-store OK: all', Object.keys({
   resolveLabels, findLabel, labelIconKey, resolveLabelIcon, nextSessionStatus, assignStatus,
-  isRecordKeySafe, validateLabelInput, generateLabelKey, nextPaletteColor,
+  isRecordKeySafe, validateLabelInput, generateLabelKey, nextPaletteColor, planAutoActive,
 }).length, 'cases passed')

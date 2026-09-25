@@ -30,6 +30,7 @@
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.0",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.7-rc.2 <0.2.0",
     "@deepseek-ai/dsh-settings": ">=0.1.7-rc.2 <0.2.0",
     "@deepseek-ai/dsh-storage-domain": ">=0.1.7-rc.2 <0.2.0",
     "@deepseek-ai/schemastery": "^3.0.0"
@@ -56,9 +57,10 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-primitives",
         "@deepseek-ai/dsh-client-ui-session",
-        "@deepseek-ai/dsh-client-ui-workspace",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   }
