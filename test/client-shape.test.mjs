@@ -360,19 +360,25 @@ test('设置页内置标签改色接线（swatch 写 overrides、恢复默认清
     unset(key) { scopeCalls.push([key, 'UNSET']) },
   }
   const ctx = {
-    configForms: { get() { return scopeMock } },
+    configForms: {
+      get() { return scopeMock },
+      whileServed(_ids, fn) { return fn() },
+    },
     sessions: { list: { subscribe() { return () => {} }, getSnapshot() { return { phase: 'ready', ids: [], byId: {} } } } },
     slots: {
       inject(name, fn) {
         const reg = fn()
-        if (name === 'settings.section') settingsRenderer = reg.renderer
+        if (name === 'plugins.bundle.config') {
+          assert.equal(reg.opts.key, 'dsh-session-status', 'config card key must be the package name')
+          settingsRenderer = reg.renderer
+        }
       },
       register(opts, renderer) { return { opts, renderer } },
     },
-    effect() {},
+    effect(cb) { return cb ? cb() : undefined },
   }
   captured.apply(ctx)
-  assert.ok(typeof settingsRenderer === 'function', 'settings.section renderer must be registered')
+  assert.ok(typeof settingsRenderer === 'function', 'plugins.bundle.config renderer must be registered')
 
   const renderElement = (el) => {
     if (el === null || el === undefined || typeof el !== 'object') return el

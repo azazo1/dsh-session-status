@@ -6,7 +6,7 @@
 - **会话 hover 卡**：悬停会话行时，插件状态标签与 DSH 原生「空闲/运行中」并列显示。
 - **对话内头部角落**：状态 pill 单击快速循环三态（进行中 → 已结项 → 搁置中 → 无），pill 右侧箭头展开下拉选择任意标签/清除。
 - **跨会话/跨浏览器持久化**：会话状态存于 host 端 storage domain (`session_status`), 落盘在 `$DSH_HOME/storages/` 下并带格式版本号; 标签定义存于 host 端 settings 文档 (`dsh-session-status` namespace), 换浏览器/重启不丢。
-- **设置页**：内置三态名称固定、颜色可调（8 色板，点默认色或「恢复默认」复位）；自定义标签可增删改（名称、色板或任意 `#RRGGBB` 颜色、图标）。
+- **插件页配置卡片**：内置三态名称固定, 颜色可调 (8 色板, 点默认色或「恢复默认」复位); 自定义标签可增删改 (名称, 色板或任意 `#RRGGBB` 颜色, 图标).
 
 ## 安装
 
@@ -28,7 +28,7 @@ web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多
 
 1. 打开任意对话 → 头部右侧出现状态 pill（`● 未设置状态`）→ 单击 pill 快速循环「进行中 → 已结项 → 搁置中 → 无」，或点 pill 右侧箭头从下拉中选择任意标签/清除。
 2. 会话列表（侧栏）每行标题前出现对应颜色的状态点；悬停会话行，hover 卡中与「空闲/运行中」并列显示插件状态标签。
-3. 设置 → 「会话状态」页：调整内置三态颜色（点默认色或「恢复默认」复位）；添加/重命名/改色/换图标/删除自定义标签，颜色支持色板或任意 `#RRGGBB`（`#RGB` 简写亦可）。
+3. 插件 → `dsh-session-status` 卡片上的配置区：调整内置三态颜色 (点默认色或「恢复默认」复位); 添加/重命名/改色/换图标/删除自定义标签, 颜色支持色板或任意 `#RRGGBB` (`#RGB` 简写亦可).
 
 ## 数据模型
 
@@ -83,7 +83,7 @@ pwsh -File scripts\publish-interactive.ps1
 
 ## 实现要点
 
-- **双轨制**：`package.json` 的 `dsh.client.inject` 写 NPM 包名；浏览器 bundle（`lib/client.js`）的 `exports.inject` 写 Cordis 服务名（`slots` / `settingsScope` / `sessions`）——写错会导致 web boot 永久 pending。
+- **双轨制**: `package.json` 的 `dsh.client.inject` 写 NPM 包名; 浏览器 bundle (`lib/client.js`) 的 `exports.inject` 写 Cordis 服务名 (`slots` / `configForms` / `sessions`) -- 写错会导致 web boot 永久 pending.
 - **host 一半按服务可用性装配**：settings 注册在插件 `apply` 里直接做；storage domain + HTTP 路由放在 `ctx.inject(['storageDomain', 'webServer'], …)` 子 fiber 里, 缺任一服务（例如 headless 组合）时只失去状态读写, 插件仍可加载。
 - **浏览器侧数据通道**：状态映射只能通过 host 路由读写, client 本地保留一份镜像做乐观更新, 写后回填服务端快照, 另有 15s 轮询与窗口聚焦/标签页可见时的立即刷新, 覆盖其它标签页或浏览器造成的变更。
 - **列表行无官方槽**: 从 React 行组件的 key 与 `node.id` / `result.id` 交叉确认 session id, 再匹配会话快照, 支持同名分叉, 改名和列表重排. 普通行和搜索结果都可显示标签, 无状态或空白会话不注入.
